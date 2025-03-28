@@ -15,7 +15,7 @@
 
 // Calculate buffer size for 10 seconds at 8kHz (lower sample rate for better quality)
 // 8000 samples/second * 10 seconds = 80000 samples
-const uint32_t buffer_size = 80000;  // 10 seconds at 8kHz
+const uint32_t buffer_size = 100000;  // Increased buffer for 10+ seconds at 8kHz
 int16_t *buffer = (int16_t *)malloc(buffer_size * sizeof(int16_t));
 
 static esp_err_t hello_get_handler(httpd_req_t *req) {
@@ -105,8 +105,10 @@ void app_main(void * arg) {
 }
 
 void record_and_play_audio(void *arg) {
-    const uint32_t SAMPLE_RATE = 17000;  // Lower sample rate for better quality
-    const uint32_t RECORD_DURATION_MS = 10000;  // 10 seconds in milliseconds
+    // Try a different sample rate
+    const uint32_t RECORD_SAMPLE_RATE = 8000;  // Sample rate for recording
+    const uint32_t PLAYBACK_SAMPLE_RATE = 16000;  // Double sample rate for playback to fix slow motion
+    const uint32_t RECORD_DURATION_MS = 5000;  // 10 seconds in milliseconds
     
     while (1) {
         // Clear the buffer before each recording
@@ -116,9 +118,9 @@ void record_and_play_audio(void *arg) {
         M5.Display.setCursor(0, 0);
         M5.Display.println("Ready to record");
         M5.Display.printf("Buffer: %d samples\n", buffer_size);
-        M5.Display.printf("Rate: %d Hz\n", SAMPLE_RATE);
+        M5.Display.printf("Rec rate: %d Hz\n", RECORD_SAMPLE_RATE);
+        M5.Display.printf("Play rate: %d Hz\n", PLAYBACK_SAMPLE_RATE);
         M5.Display.printf("Duration: %d sec\n", RECORD_DURATION_MS / 1000);
-        M5.Display.printf("Buffer addr: %p\n", buffer);
         M5.Display.printf("Buffer size: %lu bytes\n", buffer_size * sizeof(int16_t));
         
         // Debug: Print free memory
@@ -137,17 +139,17 @@ void record_and_play_audio(void *arg) {
         
         // Use microphone configuration for better control
         auto mic_cfg = M5.Mic.config();
-        mic_cfg.sample_rate = SAMPLE_RATE;
+        mic_cfg.sample_rate = RECORD_SAMPLE_RATE;
         mic_cfg.stereo = false;  // mono recording
         M5.Mic.config(mic_cfg);
         
         M5.Display.clear();
         M5.Display.setCursor(0, 0);
         M5.Display.println("Starting recording...");
-        M5.Display.printf("Sample rate: %d Hz\n", SAMPLE_RATE);
+        M5.Display.printf("Sample rate: %d Hz\n", RECORD_SAMPLE_RATE);
         
-        // Start recording
-        bool record_success = M5.Mic.record((int16_t*)buffer, buffer_size, SAMPLE_RATE);
+        // Start recording - explicitly pass the sample rate
+        bool record_success = M5.Mic.record((int16_t*)buffer, buffer_size, RECORD_SAMPLE_RATE);
         M5.Display.printf("Record start: %s\n", record_success ? "OK" : "FAILED");
         
         if (!record_success) {
@@ -271,7 +273,7 @@ void record_and_play_audio(void *arg) {
         M5.Display.printf("Non-zero: %d/%d\n", non_zero_count, buffer_size);
         M5.Display.printf("Min: %d, Max: %d\n", min_value, max_value);
         M5.Display.printf("Last non-zero: %d\n", last_non_zero);
-        M5.Display.printf("Est. duration: %.1f sec\n", (float)last_non_zero / SAMPLE_RATE);
+        M5.Display.printf("Est. duration: %.1f sec\n", (float)last_non_zero / RECORD_SAMPLE_RATE);
         
         // Wait for user to see the data
         for (int i = 0; i < 30 && !M5.BtnA.wasPressed(); i++) {
@@ -279,10 +281,12 @@ void record_and_play_audio(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         
-        // Play back the recording
+        // Play back with adjusted sample rate to fix slow motion
         M5.Display.clear();
         M5.Display.setCursor(0, 0);
         M5.Display.println("Playing back...");
+        M5.Display.printf("Rec rate: %d Hz\n", RECORD_SAMPLE_RATE);
+        M5.Display.printf("Play rate: %d Hz\n", PLAYBACK_SAMPLE_RATE);
         
         if (!M5.Speaker.begin()) {
             M5.Display.println("Speaker init failed!");
@@ -296,9 +300,9 @@ void record_and_play_audio(void *arg) {
         uint32_t actual_samples = last_non_zero > 0 ? last_non_zero + 1 : buffer_size;
         M5.Display.printf("Playing %lu samples\n", actual_samples);
         
-        // Make sure to use the exact same sample rate for playback
+        // Use HIGHER sample rate for playback to fix slow motion
         M5.Display.println("Starting playback");
-        M5.Speaker.playRaw((int16_t*)buffer, actual_samples, SAMPLE_RATE, false, 1, 0);
+        M5.Speaker.playRaw((int16_t*)buffer, actual_samples, PLAYBACK_SAMPLE_RATE, false, 1, 0);
         
         // Wait for playback to complete
         start_time = millis();
