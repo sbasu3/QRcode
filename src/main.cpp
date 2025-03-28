@@ -13,6 +13,11 @@
 #define EXAMPLE_ESP_WIFI_PASS      "mypassword"
 #define EXAMPLE_MAX_STA_CONN       4
 
+// Calculate buffer size for 10 seconds at 8kHz (lower sample rate for better quality)
+// 8000 samples/second * 10 seconds = 80000 samples
+const uint32_t buffer_size = 80000;  // 10 seconds at 8kHz
+int16_t *buffer = (int16_t *)malloc(buffer_size * sizeof(int16_t));
+
 static esp_err_t hello_get_handler(httpd_req_t *req) {
     const char* resp_str = "Hello, world!";
     httpd_resp_send(req, resp_str, strlen(resp_str));
@@ -99,6 +104,231 @@ void app_main(void * arg) {
     }
 }
 
+void record_and_play_audio(void *arg) {
+    const uint32_t SAMPLE_RATE = 17000;  // Lower sample rate for better quality
+    const uint32_t RECORD_DURATION_MS = 10000;  // 10 seconds in milliseconds
+    
+    while (1) {
+        // Clear the buffer before each recording
+        memset(buffer, 0, buffer_size * sizeof(int16_t));
+        
+        M5.Display.clear();
+        M5.Display.setCursor(0, 0);
+        M5.Display.println("Ready to record");
+        M5.Display.printf("Buffer: %d samples\n", buffer_size);
+        M5.Display.printf("Rate: %d Hz\n", SAMPLE_RATE);
+        M5.Display.printf("Duration: %d sec\n", RECORD_DURATION_MS / 1000);
+        M5.Display.printf("Buffer addr: %p\n", buffer);
+        M5.Display.printf("Buffer size: %lu bytes\n", buffer_size * sizeof(int16_t));
+        
+        // Debug: Print free memory
+        M5.Display.printf("Free heap: %lu bytes\n", esp_get_free_heap_size());
+        
+        // Wait before starting
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        
+        // Initialize microphone (make sure speaker is off)
+        M5.Speaker.end();
+        if (!M5.Mic.begin()) {
+            M5.Display.println("Mic init failed!");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        
+        // Use microphone configuration for better control
+        auto mic_cfg = M5.Mic.config();
+        mic_cfg.sample_rate = SAMPLE_RATE;
+        mic_cfg.stereo = false;  // mono recording
+        M5.Mic.config(mic_cfg);
+        
+        M5.Display.clear();
+        M5.Display.setCursor(0, 0);
+        M5.Display.println("Starting recording...");
+        M5.Display.printf("Sample rate: %d Hz\n", SAMPLE_RATE);
+        
+        // Start recording
+        bool record_success = M5.Mic.record((int16_t*)buffer, buffer_size, SAMPLE_RATE);
+        M5.Display.printf("Record start: %s\n", record_success ? "OK" : "FAILED");
+        
+        if (!record_success) {
+            M5.Display.println("Record start failed!");
+            M5.Mic.end();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        
+        M5.Display.println("Recording in progress");
+        
+        // Record for exactly 10 seconds
+        uint32_t start_time = millis();
+        int prev_second = -1;
+        bool is_recording = true;
+        
+        // Continue recording until the full duration has passed
+        while (is_recording && millis() - start_time < RECORD_DURATION_MS) {
+            int current_second = (millis() - start_time) / 1000;
+            
+            // Only update the display when the second changes
+            if (current_second != prev_second) {
+                M5.Display.fillRect(0, 70, 320, 30, BLACK);  // Clear previous text
+                M5.Display.setCursor(0, 70);
+                M5.Display.printf("Recording: %d sec of %d", 
+                    current_second, RECORD_DURATION_MS / 1000);
+                
+                // Debug: print recording status
+                M5.Display.setCursor(0, 100);
+                is_recording = M5.Mic.isRecording();
+                M5.Display.printf("isRecording: %s", is_recording ? "true" : "false");
+                
+                prev_second = current_second;
+            }
+            
+            if (!is_recording) {
+                M5.Display.println("Recording stopped early!");
+                break;
+            }
+            
+            // Process M5 events
+            M5.update();
+            vTaskDelay(pdMS_TO_TICKS(10)); // Check more frequently
+        }
+        
+        // Ensure we've recorded for the full duration
+        uint32_t elapsed = millis() - start_time;
+        M5.Display.setCursor(0, 130);
+        M5.Display.printf("Record time: %lu ms\n", elapsed);
+        
+        if (elapsed < RECORD_DURATION_MS) {
+            M5.Display.setCursor(0, 160);
+            M5.Display.println("Recording time was short!");
+            M5.Display.printf("Only recorded %lu ms\n", elapsed);
+        }
+        
+        M5.Display.println("Recording completed");
+        
+        // Make sure recording is fully complete
+        int wait_count = 0;
+        while (M5.Mic.isRecording() && wait_count < 100) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_count++;
+        }
+        
+        M5.Display.printf("Wait count: %d\n", wait_count);
+        
+        // Turn off microphone before starting speaker
+        M5.Mic.end();
+        vTaskDelay(pdMS_TO_TICKS(500)); // Brief pause
+        
+        // For testing - wait for user to press button to continue
+        M5.Display.println("Press button to play back...");
+        for (int i = 0; i < 30 && !M5.BtnA.wasPressed(); i++) {
+            M5.update();
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        
+        // Debug: Print buffer data
+        M5.Display.clear();
+        M5.Display.setCursor(0, 0);
+        M5.Display.println("Buffer Data Analysis:");
+        
+        // Check for non-zero data in buffer (print first 5 samples)
+        M5.Display.println("First 5 samples:");
+        for (int i = 0; i < 5 && i < buffer_size; i++) {
+            M5.Display.printf("%d: %d\n", i, buffer[i]);
+        }
+        
+        // Check last part of filled buffer
+        M5.Display.println("Last samples:");
+        int last_idx = 0;
+        // Find approximate end of valid data by looking for first long run of zeros
+        for (int i = 0; i < buffer_size - 100; i++) {
+            if (buffer[i] != 0 && buffer[i+10] == 0 && buffer[i+50] == 0 && buffer[i+100] == 0) {
+                last_idx = i;
+                break;
+            }
+        }
+        if (last_idx == 0) last_idx = buffer_size - 5; // Default to end if no clear ending found
+        
+        for (int i = last_idx - 5; i < last_idx && i < buffer_size; i++) {
+            M5.Display.printf("%d: %d\n", i, buffer[i]);
+        }
+        
+        // Count non-zero values in buffer
+        int non_zero_count = 0;
+        int16_t min_value = 32767;
+        int16_t max_value = -32768;
+        int last_non_zero = 0;
+        
+        for (int i = 0; i < buffer_size; i++) {
+            if (buffer[i] != 0) {
+                non_zero_count++;
+                if (buffer[i] < min_value) min_value = buffer[i];
+                if (buffer[i] > max_value) max_value = buffer[i];
+                last_non_zero = i;
+            }
+        }
+        
+        M5.Display.printf("Non-zero: %d/%d\n", non_zero_count, buffer_size);
+        M5.Display.printf("Min: %d, Max: %d\n", min_value, max_value);
+        M5.Display.printf("Last non-zero: %d\n", last_non_zero);
+        M5.Display.printf("Est. duration: %.1f sec\n", (float)last_non_zero / SAMPLE_RATE);
+        
+        // Wait for user to see the data
+        for (int i = 0; i < 30 && !M5.BtnA.wasPressed(); i++) {
+            M5.update();
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        
+        // Play back the recording
+        M5.Display.clear();
+        M5.Display.setCursor(0, 0);
+        M5.Display.println("Playing back...");
+        
+        if (!M5.Speaker.begin()) {
+            M5.Display.println("Speaker init failed!");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        
+        M5.Speaker.setVolume(255);  // Set volume to maximum
+        
+        // Calculate actual recorded samples for playback
+        uint32_t actual_samples = last_non_zero > 0 ? last_non_zero + 1 : buffer_size;
+        M5.Display.printf("Playing %lu samples\n", actual_samples);
+        
+        // Make sure to use the exact same sample rate for playback
+        M5.Display.println("Starting playback");
+        M5.Speaker.playRaw((int16_t*)buffer, actual_samples, SAMPLE_RATE, false, 1, 0);
+        
+        // Wait for playback to complete
+        start_time = millis();
+        prev_second = -1;
+        while (M5.Speaker.isPlaying()) {
+            int current_second = (millis() - start_time) / 1000;
+            
+            // Only update the display when the second changes
+            if (current_second != prev_second) {
+                M5.Display.fillRect(0, 40, 320, 30, BLACK);  // Clear previous text
+                M5.Display.setCursor(0, 40);
+                M5.Display.printf("Playing: %d sec", current_second);
+                prev_second = current_second;
+            }
+            
+            M5.update();
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        
+        elapsed = millis() - start_time;
+        M5.Display.printf("Playback time: %lu ms\n", elapsed);
+        
+        M5.Speaker.end();
+        M5.Display.println("Playback completed");
+        M5.Display.println("Wait for next recording...");
+        
+        vTaskDelay(pdMS_TO_TICKS(3000));  // Longer wait before next cycle
+    }
+}
+
 //int main(int argc, char const *argv[])
 void setup() {
     M5.begin();
@@ -112,6 +342,7 @@ void setup() {
 
     xTaskCreate(app_main, "app_main_task", 20480, NULL, 1, NULL);
     //vTaskStartScheduler();
+    xTaskCreate(record_and_play_audio, "record_and_play_audio", 20480, NULL, 1, NULL);
     //return 0;
 }
 

@@ -1,0 +1,11 @@
+{
+    "idf.pythonInstallPath": "/Users/nidhishgajjar/anaconda3/bin/python",
+    "idf.port": "/dev/tty.usbmodem14201",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32s3"
+    },
+    "idf.openOcdConfigs": [
+        "board/esp32s3-builtin.cfg"
+    ],
+    "idf.flashType": "JTAG"
+}
